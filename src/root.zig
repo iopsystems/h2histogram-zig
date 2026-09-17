@@ -31,10 +31,10 @@ pub const Config = struct {
 
     pub fn init(gp: u8, mvp: u8) Error!Config {
         if (gp >= mvp or mvp > 64) return error.InvalidConfig;
-        if (gp >= 32) return error.Overflow;
+        if (gp >= 32) return error.InvalidConfig;
 
         const n = (@as(u64, 1) << @intCast(gp)) * (@as(u64, mvp) - gp + 1);
-        if (n > std.math.maxInt(u32)) return error.Overflow;
+        if (n > std.math.maxInt(u32)) return error.InvalidConfig;
         return .{
             .grouping_power = gp,
             .max_value_power = mvp,
@@ -87,7 +87,7 @@ fn validateP(p: f64) Error!void {
 }
 
 fn validateOutput(ps: []const f64, out: []?Bucket) Error!void {
-    if (ps.len != out.len) return error.InvalidOutput;
+    if (out.len < ps.len) return error.InvalidOutput;
     for (ps) |p| try validateP(p);
 }
 
@@ -234,13 +234,15 @@ pub const Histogram = struct {
         unreachable;
     }
 
+    /// Writes one result per request; output must have room for all requests.
+    /// Any remaining output slots are untouched, including for empty data.
     pub fn percentilesInto(self: *const Histogram, ps: []const f64, out: []?Bucket) Error!void {
         try validateOutput(ps, out);
         if (ps.len == 0) return;
 
         const n = try self.total();
 
-        for (ps, out) |p, *b| b.* = if (n == 0) null else self.atRank(rank(p, n));
+        for (ps, out[0..ps.len]) |p, *b| b.* = if (n == 0) null else self.atRank(rank(p, n));
     }
 
     pub fn mean(self: *const Histogram) Error!?f64 {
@@ -281,10 +283,30 @@ pub const Histogram = struct {
     }
 
     pub fn toCumulative(self: *const Histogram, a: Allocator) Error!Cumulative {
-        var s = try self.toSparse(a);
-        defer s.deinit();
+        var len: usize = 0;
 
-        return s.toCumulative(a);
+        for (self.counts) |v| {
+            if (v != 0) len += 1;
+        }
+
+        const entries = try a.alloc(Entry, len);
+        errdefer a.free(entries);
+
+        var j: usize = 0;
+        var prefix: u64 = 0;
+
+        for (self.counts, 0..) |v, i| {
+            if (v == 0) continue;
+            prefix = try checked(prefix, v);
+            entries[j] = .{ .index = @intCast(i), .count = prefix };
+            j += 1;
+        }
+
+        return .{
+            .allocator = a,
+            .config = self.config,
+            .entries = entries,
+        };
     }
 };
 
@@ -386,13 +408,15 @@ fn Representation(comptime cumulative: bool) type {
             unreachable;
         }
 
+        /// Writes one result per request; output must have room for all requests.
+        /// Any remaining output slots are untouched, including for empty data.
         pub fn percentilesInto(self: *const Self, ps: []const f64, out: []?Bucket) Error!void {
             try validateOutput(ps, out);
             if (ps.len == 0) return;
 
             const n = try self.total();
 
-            for (ps, out) |p, *b| b.* = if (n == 0) null else self.atRank(rank(p, n));
+            for (ps, out[0..ps.len]) |p, *b| b.* = if (n == 0) null else self.atRank(rank(p, n));
         }
 
         pub fn mean(self: *const Self) Error!?f64 {
@@ -442,7 +466,9 @@ fn Representation(comptime cumulative: bool) type {
         pub fn merge(self: *const Self, a: Allocator, other: *const Self) Error!Self {
             if (!self.config.eql(other.config)) return error.ConfigMismatch;
 
-            var list: std.ArrayList(Entry) = .empty;
+            const capacity = std.math.add(usize, self.entries.len, other.entries.len) catch
+                return error.OutOfMemory;
+            var list = try std.ArrayList(Entry).initCapacity(a, capacity);
             defer list.deinit(a);
 
             var i: usize = 0;
@@ -469,7 +495,7 @@ fn Representation(comptime cumulative: bool) type {
                     prefix = try checked(prefix, e.count);
                     e.count = prefix;
                 }
-                try list.append(a, e);
+                list.appendAssumeCapacity(e);
             }
 
             return .{
@@ -483,7 +509,7 @@ fn Representation(comptime cumulative: bool) type {
             if (gp >= self.config.grouping_power) return error.InvalidConfig;
 
             const c = try Config.init(gp, self.config.max_value_power);
-            var list: std.ArrayList(Entry) = .empty;
+            var list = try std.ArrayList(Entry).initCapacity(a, self.entries.len);
             defer list.deinit(a);
 
             for (self.entries, 0..) |e, i| {
@@ -492,7 +518,7 @@ fn Representation(comptime cumulative: bool) type {
                 if (list.items.len > 0 and list.items[list.items.len - 1].index == j) {
                     const last = &list.items[list.items.len - 1];
                     last.count = try checked(last.count, n);
-                } else try list.append(a, .{ .index = j, .count = n });
+                } else list.appendAssumeCapacity(.{ .index = j, .count = n });
             }
             if (cumulative) {
                 var prefix: u64 = 0;

@@ -9,7 +9,7 @@ test "geometry preserves boundaries and rejects impossible shapes" {
     try std.testing.expectEqual(@as(u64, 257), (try c.range(256)).end);
     try std.testing.expectEqual(std.math.maxInt(u64), (try c.range(7423)).end);
     try std.testing.expectError(error.InvalidConfig, h.Config.init(4, 4));
-    try std.testing.expectError(error.Overflow, h.Config.init(31, 32));
+    try std.testing.expectError(error.InvalidConfig, h.Config.init(31, 32));
 }
 
 test "record wrap lifecycle and transactional arithmetic" {
@@ -23,6 +23,7 @@ test "record wrap lifecycle and transactional arithmetic" {
     try x.record(1, std.math.maxInt(u64));
     try x.record(1, 1);
     try std.testing.expectEqual(@as(u64, 0), try x.total());
+    try std.testing.expectEqual(@as(?h.Bucket, null), try x.percentile(0.5));
     try x.record(2, 3);
     try x.snapshotInto(&y);
     try x.record(2, 1);
@@ -100,7 +101,10 @@ fn allocationScenario(allocator: std.mem.Allocator) !void {
     var x = try h.Histogram.init(allocator, try h.Config.init(2, 8));
     defer x.deinit();
 
-    try x.record(200, 3);
+    for (0..256) |i| try x.record(@intCast(i), @intCast(i % 5 + 1));
+    var direct = try x.toCumulative(allocator);
+    defer direct.deinit();
+
     var s = try x.toSparse(allocator);
     defer s.deinit();
 
@@ -305,6 +309,7 @@ test "collapsed counter and cumulative overflow fail without changing source" {
     try std.testing.expectError(error.Overflow, x.downsample(a, 0));
     try std.testing.expectError(error.Overflow, s.downsample(a, 0));
     try std.testing.expectError(error.Overflow, s.toCumulative(a));
+    try std.testing.expectError(error.Overflow, x.toCumulative(a));
     try std.testing.expectError(error.Overflow, s.merge(a, &s));
     try std.testing.expectEqual(std.math.maxInt(u64), x.counts[2]);
     var p = try h.Cumulative.init(a, c, &.{.{ .index = 0, .count = std.math.maxInt(u64) }});
@@ -315,5 +320,166 @@ test "collapsed counter and cumulative overflow fail without changing source" {
     var output = [_]?h.Bucket{.{ .start = 7, .end = 7, .count = 7 }};
     try std.testing.expectError(error.Overflow, x.percentilesInto(&.{0.5}, &output));
     try std.testing.expectEqual(@as(u64, 7), output[0].?.count);
-    try std.testing.expectError(error.InvalidOutput, x.percentilesInto(&.{}, &output));
+    try x.percentilesInto(&.{}, &output);
+    try std.testing.expectEqual(@as(u64, 7), output[0].?.count);
+}
+
+test "oversized percentile buffers preserve tails across representations" {
+    var x = try h.Histogram.init(a, try h.Config.init(2, 8));
+    defer x.deinit();
+
+    for (0..2) |populated| {
+        if (populated != 0) try x.record(3, 5);
+        var s = try x.toSparse(a);
+        defer s.deinit();
+
+        var p = try x.toCumulative(a);
+        defer p.deinit();
+
+        inline for (.{
+            &x,
+            &s,
+            &p,
+        }) |source| {
+            const sentinel: ?h.Bucket = .{ .start = 99, .end = 99, .count = 99 };
+            var out = [_]?h.Bucket{
+                sentinel,
+                sentinel,
+                sentinel,
+            };
+            try source.percentilesInto(&.{ 0, 1 }, &out);
+            try std.testing.expectEqualDeep(try source.percentile(0), out[0]);
+            try std.testing.expectEqualDeep(try source.percentile(1), out[1]);
+            try std.testing.expectEqualDeep(sentinel, out[2]);
+            try source.percentilesInto(&.{}, &out);
+            try std.testing.expectEqualDeep(sentinel, out[2]);
+            try std.testing.expectError(error.InvalidOutput, source.percentilesInto(&.{ 0, 1 }, out[0..1]));
+            try std.testing.expectError(error.InvalidPercentile, source.percentilesInto(&.{std.math.nan(f64)}, &out));
+            try std.testing.expectEqualDeep(sentinel, out[2]);
+        }
+    }
+}
+
+test "unrepresentable geometry is invalid configuration" {
+    try std.testing.expectError(error.InvalidConfig, h.Config.init(40, 64));
+    const invalid: h.Config = .{
+        .grouping_power = 40,
+        .max_value_power = 64,
+        .total_buckets = 1,
+    };
+    try std.testing.expectError(error.InvalidConfig, h.Histogram.init(a, invalid));
+}
+
+test "dense cumulative conversion allocates its result once" {
+    var x = try h.Histogram.init(a, try h.Config.init(2, 8));
+    defer x.deinit();
+
+    try x.record(1, 2);
+    try x.record(200, 3);
+    var allocations = std.testing.FailingAllocator.init(a, .{});
+    var p = try x.toCumulative(allocations.allocator());
+    defer p.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), allocations.allocations);
+    try std.testing.expectEqual(@as(u64, 5), try p.total());
+    try std.testing.expectEqualDeep(try x.percentile(0.5), try p.percentile(0.5));
+}
+
+test "bounded transforms reserve capacity before filling results" {
+    var x = try h.Histogram.init(a, try h.Config.init(3, 8));
+    defer x.deinit();
+
+    for (0..256) |i| try x.record(@intCast(i), 1);
+    var s = try x.toSparse(a);
+    defer s.deinit();
+
+    var p = try x.toCumulative(a);
+    defer p.deinit();
+
+    inline for (.{ &s, &p }) |source| {
+        var merge_allocations = std.testing.FailingAllocator.init(a, .{});
+        var merged = try source.merge(merge_allocations.allocator(), source);
+        defer merged.deinit();
+
+        // toOwnedSlice may allocate once more if the allocator cannot shrink.
+        try std.testing.expect(merge_allocations.allocations <= 2);
+        var down_allocations = std.testing.FailingAllocator.init(a, .{});
+        var down = try source.downsample(down_allocations.allocator(), 1);
+        defer down.deinit();
+
+        try std.testing.expect(down_allocations.allocations <= 2);
+    }
+}
+
+test "interleaved and empty merges match dense results in both orders" {
+    const c = try h.Config.init(3, 8);
+    var x = try h.Histogram.init(a, c);
+    defer x.deinit();
+
+    var y = try h.Histogram.init(a, c);
+    defer y.deinit();
+
+    var empty = try h.Histogram.init(a, c);
+    defer empty.deinit();
+
+    for ([_]u64{
+        1,
+        3,
+        7,
+        100,
+    }) |value| try x.record(value, 2);
+    for ([_]u64{
+        0,
+        3,
+        4,
+        200,
+    }) |value| try y.record(value, 5);
+    for ([_][2]*const h.Histogram{
+        .{ &x, &y },
+        .{ &y, &x },
+        .{ &empty, &x },
+        .{ &x, &empty },
+        .{ &empty, &empty },
+    }) |pair| {
+        var dense = try pair[0].merge(a, pair[1]);
+        defer dense.deinit();
+
+        var expected = try dense.toSparse(a);
+        defer expected.deinit();
+
+        inline for (.{ h.Sparse, h.Cumulative }) |T| {
+            var left = if (T == h.Sparse) try pair[0].toSparse(a) else try pair[0].toCumulative(a);
+            defer left.deinit();
+
+            var right = if (T == h.Sparse) try pair[1].toSparse(a) else try pair[1].toCumulative(a);
+            defer right.deinit();
+
+            var merged = try left.merge(a, &right);
+            defer merged.deinit();
+
+            var actual = try merged.toSparse(a);
+            defer actual.deinit();
+
+            try std.testing.expectEqualSlices(h.Entry, expected.entries, actual.entries);
+        }
+    }
+}
+
+test "self add doubles counters and preflights overflow transactionally" {
+    var x = try h.Histogram.init(a, try h.Config.init(2, 8));
+    defer x.deinit();
+
+    try x.record(0, 3);
+    try x.record(200, 7);
+    try x.add(&x);
+    try std.testing.expectEqual(@as(u64, 20), try x.total());
+    try std.testing.expectEqual(@as(u64, 6), x.counts[0]);
+    x.reset();
+    try x.record(0, 1);
+    try x.record(200, std.math.maxInt(u64));
+    const before = try a.dupe(u64, x.counts);
+    defer a.free(before);
+
+    try std.testing.expectError(error.Overflow, x.add(&x));
+    try std.testing.expectEqualSlices(u64, before, x.counts);
 }

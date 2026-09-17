@@ -9,11 +9,16 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    module.addImport("geometry", b.createModule(.{
+    const test_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_module.addImport("geometry", b.createModule(.{
         .root_source_file = b.path("tests/geometry.zig"),
     }));
 
-    const tests = b.addTest(.{ .root_module = module });
+    const tests = b.addTest(.{ .root_module = test_module });
     b.step("test", "Run behavioral and allocation-failure tests").dependOn(&b.addRunArtifact(tests).step);
 
     const example = b.addExecutable(.{

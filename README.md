@@ -9,6 +9,7 @@ infrequent reporting, and `Cumulative` for repeated percentile queries.
 `Config.init(grouping_power, max_value_power)` accepts
 `grouping_power < max_value_power <= 64` when the total number of buckets
 `2^grouping_power * (max_value_power - grouping_power + 1)` fits `u32`.
+Unsupported geometry returns `error.InvalidConfig`.
 Integer bucket geometry matches the Rust implementation, including `u64` maximum.
 Logarithmic bucket relative error is bounded by `2^-grouping_power`;
 values below `2^(grouping_power + 1)` have unit-width buckets.
@@ -60,7 +61,10 @@ in `[0,1]` and return optional buckets (`null` for empty data). Buckets expose
 inclusive `start`/`end` and the original bucket's count. The rank is
 `ceil(p * total)`, with exact first/last populated buckets at p0/p1. Interior
 ranks use floating-point multiplication and can round for totals above `2^53`;
-this differs from the C draft's exact binary-fraction rank computation.
+the C draft uses the same floating-point rank computation.
+Output must have room for every request; additional slots are left untouched.
+Empty data writes `null` only to the requested slots. The C API instead returns
+`H2_EMPTY` without writing output, reflecting its plain-struct status contract.
 All requests and output size are validated before any output write. Scalar
 queries allocate nothing; batch output is caller-owned and reusable. Dense and
 sparse batches scan once per query to avoid scratch allocation; cumulative
@@ -80,8 +84,9 @@ unchanged on invalid requests or total overflow.
 
 Report totals and prefixes are checked `u64`; a total exceeding `u64` returns
 `error.Overflow`. Rust can widen report totals, so this is an explicit compatibility
-limit. Recording itself still wraps independently per bucket. No serialization
-format, thread safety, forced SIMD, benchmark claims or registry release is
+limit. Recording itself still wraps independently per bucket. A bucket that
+wraps to zero is empty for reporting; no overflow history is tracked.
+No serialization format, thread safety, forced SIMD, benchmark claims or registry release is
 provided. This is a native API draft rather than an ABI compatibility promise.
 
 ## Contributing
