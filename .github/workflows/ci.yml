@@ -1,0 +1,15 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig fmt --check build.zig build.zig.zon src tests/geometry.zig example
+      - run: zig build test
+      - run: zig build test -Doptimize=ReleaseSafe
+      - run: zig build test -Doptimize=ReleaseFast
+      - run: zig build example
