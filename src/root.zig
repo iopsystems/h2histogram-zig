@@ -1,11 +1,26 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-pub const Error = error{ InvalidConfig, OutOfRange, Overflow, ConfigMismatch, InvalidShape, InvalidPercentile, InvalidOutput, EmptyInput, AliasedStorage, OutOfMemory };
+pub const Error = error{
+    InvalidConfig,
+    OutOfRange,
+    Overflow,
+    ConfigMismatch,
+    InvalidShape,
+    InvalidPercentile,
+    InvalidOutput,
+    EmptyInput,
+    AliasedStorage,
+    OutOfMemory,
+};
 
 pub const Range = struct { start: u64, end: u64 };
 
-pub const Bucket = struct { start: u64, end: u64, count: u64 };
+pub const Bucket = struct {
+    start: u64,
+    end: u64,
+    count: u64,
+};
 
 pub const Entry = struct { index: u32, count: u64 };
 
@@ -20,7 +35,11 @@ pub const Config = struct {
 
         const n = (@as(u64, 1) << @intCast(gp)) * (@as(u64, mvp) - gp + 1);
         if (n > std.math.maxInt(u32)) return error.Overflow;
-        return .{ .grouping_power = gp, .max_value_power = mvp, .total_buckets = @intCast(n) };
+        return .{
+            .grouping_power = gp,
+            .max_value_power = mvp,
+            .total_buckets = @intCast(n),
+        };
     }
 
     pub fn validate(self: Config) Error!void {
@@ -83,7 +102,11 @@ fn rank(p: f64, n: u64) u64 {
 
 fn bucket(c: Config, i: u32, n: u64) Bucket {
     const r = c.range(i) catch unreachable;
-    return .{ .start = r.start, .end = r.end, .count = n };
+    return .{
+        .start = r.start,
+        .end = r.end,
+        .count = n,
+    };
 }
 
 fn midpoint(b: Bucket) f64 {
@@ -99,13 +122,21 @@ pub const Histogram = struct {
         try c.validate();
         const counts = try a.alloc(u64, c.total_buckets);
         @memset(counts, 0);
-        return .{ .allocator = a, .config = c, .counts = counts };
+        return .{
+            .allocator = a,
+            .config = c,
+            .counts = counts,
+        };
     }
 
     pub fn fromCounts(a: Allocator, c: Config, input: []const u64) Error!Histogram {
         try c.validate();
         if (input.len != c.total_buckets) return error.InvalidShape;
-        return .{ .allocator = a, .config = c, .counts = try a.dupe(u64, input) };
+        return .{
+            .allocator = a,
+            .config = c,
+            .counts = try a.dupe(u64, input),
+        };
     }
 
     pub fn deinit(self: *Histogram) void {
@@ -242,7 +273,11 @@ pub const Histogram = struct {
             }
         }
 
-        return .{ .allocator = a, .config = self.config, .entries = entries };
+        return .{
+            .allocator = a,
+            .config = self.config,
+            .entries = entries,
+        };
     }
 
     pub fn toCumulative(self: *const Histogram, a: Allocator) Error!Cumulative {
@@ -296,7 +331,11 @@ fn Representation(comptime cumulative: bool) type {
                 prefix = e.count;
             }
 
-            return .{ .allocator = a, .config = c, .entries = entries };
+            return .{
+                .allocator = a,
+                .config = c,
+                .entries = entries,
+            };
         }
 
         pub fn deinit(self: *Self) void {
@@ -375,7 +414,11 @@ fn Representation(comptime cumulative: bool) type {
 
             for (self.entries, 0..) |e, i| entries[i] = .{ .index = e.index, .count = self.count(i) };
 
-            return .{ .allocator = a, .config = self.config, .entries = entries };
+            return .{
+                .allocator = a,
+                .config = self.config,
+                .entries = entries,
+            };
         }
 
         pub fn toCumulative(self: *const Self, a: Allocator) Error!Cumulative {
@@ -389,7 +432,11 @@ fn Representation(comptime cumulative: bool) type {
                 entries[i] = .{ .index = e.index, .count = n };
             }
 
-            return .{ .allocator = a, .config = self.config, .entries = entries };
+            return .{
+                .allocator = a,
+                .config = self.config,
+                .entries = entries,
+            };
         }
 
         pub fn merge(self: *const Self, a: Allocator, other: *const Self) Error!Self {
@@ -411,7 +458,10 @@ fn Representation(comptime cumulative: bool) type {
                     e = .{ .index = other.entries[j].index, .count = other.count(j) };
                     j += 1;
                 } else {
-                    e = .{ .index = self.entries[i].index, .count = try checked(self.count(i), other.count(j)) };
+                    e = .{
+                        .index = self.entries[i].index,
+                        .count = try checked(self.count(i), other.count(j)),
+                    };
                     i += 1;
                     j += 1;
                 }
@@ -422,7 +472,11 @@ fn Representation(comptime cumulative: bool) type {
                 try list.append(a, e);
             }
 
-            return .{ .allocator = a, .config = self.config, .entries = try list.toOwnedSlice(a) };
+            return .{
+                .allocator = a,
+                .config = self.config,
+                .entries = try list.toOwnedSlice(a),
+            };
         }
 
         pub fn downsample(self: *const Self, a: Allocator, gp: u8) Error!Self {
@@ -449,7 +503,11 @@ fn Representation(comptime cumulative: bool) type {
                 }
             }
 
-            return .{ .allocator = a, .config = c, .entries = try list.toOwnedSlice(a) };
+            return .{
+                .allocator = a,
+                .config = c,
+                .entries = try list.toOwnedSlice(a),
+            };
         }
     };
 }

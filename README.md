@@ -83,3 +83,8 @@ Report totals and prefixes are checked `u64`; a total exceeding `u64` returns
 limit. Recording itself still wraps independently per bucket. No serialization
 format, thread safety, forced SIMD, benchmark claims or registry release is
 provided. This is a native API draft rather than an ABI compatibility promise.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the official Zig style conventions,
+project readability rules, and pinned formatting/test commands.
