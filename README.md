@@ -89,6 +89,18 @@ wraps to zero is empty for reporting; no overflow history is tracked.
 No serialization format, thread safety, forced SIMD, benchmark claims or registry release is
 provided. This is a native API draft rather than an ABI compatibility promise.
 
+## Verification
+
+Zig has no mature model checker or contract prover, so this port is not
+formally verified. The sibling C port, which implements the same algorithms,
+carries CBMC bounded proofs of bucket geometry over the whole configuration
+space, percentile rank bounds, transactional checked addition, import
+validation, and exact sparse/cumulative merge and downsample
+([h2histogram-c/verify](https://github.com/iopsystems/h2histogram-c/tree/main/verify)).
+This port is tied to it by the shared Rust-checked geometry fixtures and by
+differential testing against both the C port and the Rust crate. That is
+indirect evidence for this code, not a proof of it.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the official Zig style conventions,
